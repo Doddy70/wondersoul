@@ -20,7 +20,9 @@ WONDERSOUL JAKARTA is a local clothing label inspired by British Mods, American 
 │   ├── 01-product-research.md      Brand, market, competitors, gaps
 │   ├── 02-evaluation-innoshop.md   Source-code audit against the four goals
 │   └── 03-development-goals.md     Goals, architecture, roadmap, open decisions
-└── design-reference/               Original static template (MIT) — design language reference
+└── design-reference/               Third-party MIT static templates — design language
+    ├── fashion-brand-template/     Clothing label: 4 priced looks, 5 colour bands, category index
+    └── scooter-template/           The original reference: notch motif, full-bleed colour fields
 ```
 
 The Laravel application lives in `laravel_innoshop/` (working copy of InnoShop CE v1.0.1) and is tracked separately; the docs here are the source of truth for **what** gets built and **why**.
@@ -76,4 +78,9 @@ See [`docs/03-development-goals.md §11`](docs/03-development-goals.md) for all 
 ## Licence
 
 Project code and documentation: see [`LICENSE`](LICENSE).
-[`design-reference/`](design-reference/) contains a third-party MIT-licensed static template, unmodified, with its own licence and credits retained — see [`design-reference/LICENSE`](design-reference/LICENSE) and [`design-reference/CREDITS.md`](design-reference/CREDITS.md).
+[`design-reference/`](design-reference/) contains two separate, third-party MIT-licensed static templates by 8B (https://8b.com), unmodified, each with its own licence and credits retained:
+
+- [`design-reference/fashion-brand-template/`](design-reference/fashion-brand-template/) — clothing label layout: four priced looks with add-to-bag, five season colour bands, category index, store cards. **The closer reference for the theme.**
+- [`design-reference/scooter-template/`](design-reference/scooter-template/) — the original reference: the notch motif, full-bleed colour fields, stacked-scroll rhythm.
+
+Photographs referenced by those templates are licensed separately under the Unsplash License and are NOT covered by this project's MIT licence.

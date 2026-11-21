@@ -22,12 +22,16 @@ SOFTWARE.
 
 ---
 
-Note: the `design-reference/` directory contains a separate, third-party
-MIT-licensed project by 8B (https://8b.com). Its own licence and credits are
-retained unmodified inside that directory:
+Note: the `design-reference/` directory contains separate, third-party
+MIT-licensed projects by 8B (https://8b.com). Each keeps its own licence and
+credits, unmodified, inside its own subdirectory:
 
-  design-reference/LICENSE   (MIT, Copyright (c) 2026 8B)
-  design-reference/CREDITS.md  (photo, font and library attributions)
+  design-reference/scooter-template/LICENSE     (MIT, Copyright (c) 2026 8B)
+  design-reference/scooter-template/CREDITS.md  (photo, font, library attributions)
 
-Photographs referenced by that template are licensed separately under the
-Unsplash License and are NOT covered by this project's MIT licence.
+  design-reference/fashion-brand-template/LICENSE     (MIT, Copyright (c) 2026 8B)
+  design-reference/fashion-brand-template/CREDITS.md  (photo, font, library attributions)
+
+Both are static HTML design-language references, unmodified. The photographs
+they reference are licensed separately under the Unsplash License and are NOT
+covered by this project's MIT licence.

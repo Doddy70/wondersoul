@@ -223,6 +223,7 @@ Each phase has an explicit exit criterion. Estimates assume **one full-time deve
 |---|---|
 | **Theme `wondersoul`** | Author from scratch: `config.json`, `views/`, `assets/scss/`, `assets/js/`, `boot.php`, `demo/Seeder.php`. Use the SCSS override strategy (import `@front/css/app`, then override) to inherit catalogue/cart/checkout behaviour, and own the home/collection/product pages |
 | Design language | Carry over the working device from the design reference: the **notch** motif, the **full-bleed colour fields**, the **stacked-scroll rhythm**, single typeface, one accent colour — re-interpreted for garments, not vehicles |
+| Design reference | `design-reference/fashion-brand-template/` (MIT, 8B) is the closer fit for a clothing label than the scooter template: **four priced looks with Add-to-bag**, five season colour bands, a category index with photo previews, store cards, and a bag counter in the nav — a near-1:1 map of what the home and collection pages need. Its layout and motion ideas translate; its HTML does not (InnoShop themes are Blade + SCSS) |
 | Products | Collections (Mods / Ivy / Madchester / Soul), products, colourways, size charts, fit notes |
 | Releases | A `Release` concept (name, date, collection) surfaced on the home page and in the MCP tools |
 | Admin training | Owner walks the panel: product, stock, order, settings, plugin enable/disable |
