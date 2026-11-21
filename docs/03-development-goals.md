@@ -29,7 +29,7 @@ This is the framing that changes every decision downstream. The brand already ha
 | # | Goal | Measure of success |
 |---|---|---|
 | **G1** | A production-quality InnoShop storefront running the Wondersoul brand | `wondersoul.jkt` serving real traffic with no console/backend errors |
-| **G2** | Deployable to **Vercel** via the official Container runtime | `vercel deploy` → live URL; one-command rollback; no SSH, no server admin |
+| **G2** | Deployable to a **production server** (Nginx + PHP-FPM + MySQL + Supervisor), with **localhost staging** as the development environment | `git pull` on the server → live site; one-command rollback; no platform-specific rewrites of InnoShop |
 | **G3** | **Midtrans** (Snap) as the primary Indonesian payment rail | ≥ 95% of online Indonesian orders paid without manual reconciliation |
 | **G4** | **Meta Pixel + CAPI** with correct browser↔server event dedup | Events Manager shows matched events; Purchase ROAS attributable; custom audiences (ViewContent→AddToCart, 30d) populating |
 | **G5** | **MCP** enabled, with brand-specific tools for AI-assisted merchandising | `claude mcp add` works; ≥ 3 Wondersoul-specific tools registered |
@@ -41,7 +41,7 @@ This is the framing that changes every decision downstream. The brand already ha
 
 - ❌ Multi-vendor / marketplace mode (one brand, one operator)
 - ❌ Native mobile apps
-- ❌ Live chat / websockets (Reverb) — Vercel cannot host it, and the value is low for this traffic profile
+- ❌ Live chat on the storefront — Reverb is available on the production server, but the value is low for this traffic profile and the owner's WhatsApp already handles it
 - ❌ Owning payments (Midtrans/Stripe remain third-party rails)
 - ❌ ERP/WMS integration
 - ❌ Membership/subscription program — a plausible v2, not v1
@@ -102,47 +102,98 @@ Four collections, one per brand reference — this is the site's information arc
 
 ---
 
-## 5. Architecture — approaches
+## 5. Architecture — deployment target
 
-> The single biggest open decision is **what Vercel is allowed to be**. Three coherent options, each with a real trade-off. **G2's wording ("build ke vercel") rules out a hybrid in spirit — but the cost difference is worth stating plainly.**
+> **Decision (owner, 2026-11-21):** Vercel is dropped as the deployment target — *"Karena Vercel tidak kompatible kita lakukan deployment di staging localhost dahulu, lalu goals akan menjadi upload ke server production"* — and **G2 becomes "upload to a production server"**.
+>
+> This resolves the single largest technical risk in the plan. It also **removes** the highest-cost line item. The consequences are recorded below.
 
-### Approach A — "Vercel-native" ✅ **recommended**
+### 5.1 Why dropping Vercel is the right call
 
-Everything runs on Vercel: app as a **Container** (FrankenPHP + Caddy), database on **managed MySQL**, media on **S3/R2**, queue on the **database driver** drained by **Vercel Cron**, no websockets.
+The Vercel path required *rewriting InnoShop's deployment story*: no official PHP runtime (→ Container + FrankenPHP), no persistent workers (→ Horizon and Reverb both dropped, Reverb not replaceable), a browser installer that writes `.env` and `storage/installed` (→ patched and bypassed), an ephemeral filesystem (→ media forced onto S3), and per-request cold starts. Every one of those was a permanent tax on the codebase.
 
-| Pros | Cons |
-|---|---|
-| One platform; zero server admin; scales to zero | Managed MySQL + S3 + Vercel Pro = **real recurring cost** |
-| Matches the stated goal literally | No websockets (accepted in §2.1) |
-| Rollback / preview deployments for free | Cold starts; container build is slower than a static build |
-| | Cron-based queue drain has **minute-level latency** — order emails may lag |
+A production server removes all of them — and lets InnoShop run **the topology its own documentation prescribes**, unmodified.
 
-**Cost shape:** Vercel Pro + PlanetScale/Aiven MySQL + S3 + domain ≈ **USD 60–150/month**.
+| | Vercel (dropped) | Production server ✅ |
+|---|---|---|
+| PHP runtime | Container + FrankenPHP (rewritten) | Native PHP-FPM 8.3 |
+| Queue | DB driver + Cron (minute latency) | **Horizon** — real daemon, sub-second |
+| Websockets | Not possible | **Reverb** — official InnoShop topology |
+| Scheduler | Cron-over-HTTP workaround | `schedule:work` / crontab |
+| Media storage | Forced to S3/R2 (extra service) | **Local disk** — `storage/app/public`, one less dependency |
+| Install wizard | Broken; needed a CLI bypass + image patch | **Works as shipped** (writable FS) |
+| Backups / TLS / monitoring | Provided by platform | **Our responsibility** (see §10) |
+| Cold starts | Yes | No |
+| Cost | USD 60–150/month | **USD 12–24/month** + domain |
+| Rollback | Platform deployments | `git checkout <previous-tag>` + `migrate:rollback` |
 
-### Approach B — "Vercel front, classic server back"
+### 5.2 Target topology
 
-Vercel hosts only the CDN/edge/static assets and a thin rewrite; the Laravel app runs on a normal VPS (Hetzner/DigitalOcean) with Horizon + Reverb + Supervisor exactly as InnoShop documents.
+```
+┌─ LOCAL STAGING (this machine) ─────────────────────────────┐
+│  PHP 8.3 + Composer 2 + MySQL 8 + Node 26                   │
+│  php artisan serve  (fast loop)                             │
+│  nginx + php-fpm on :8080  (staging-accurate)               │
+└───────────────┬─────────────────────────────────────────────┘
+                │  git push  →  git pull on server
+                ▼
+┌─ PRODUCTION SERVER (Ubuntu 24.04 LTS) ─────────────────────┐
+│  Nginx  →  PHP-FPM 8.3   (public/nginx.conf is InnoShop's  │
+│                            own production vhost — reuse it) │
+│  MySQL 8   (local, daily mysqldump → offsite)               │
+│  Supervisor                                                     │
+│    ├─ horizon   (queue daemon)                                 │
+│    ├─ reverb    (websockets, :8080)                           │
+│    └─ scheduler (schedule:work)                                │
+│  storage/app/public  (media, local disk — served by Nginx)    │
+│  Let's Encrypt TLS, auto-renew                                │
+└───────────────────────────────────────────────────────────────┘
+```
 
-| Pros | Cons |
-|---|---|
-| Runs InnoShop's **documented** production topology unmodified | **Two systems**; Vercel is no longer the app host |
-| Cheapest overall (≈ USD 25–40/month all-in) | Vercel adds latency + a rewrite layer |
-| Websockets, Horizon, real cron all available | The stated goal "build ke Vercel" is only half met |
+**Reference:** InnoShop's own [Supervisor Process Management](https://docs.innoshop.cn/en/development/supervisor.html) doc prescribes exactly this — Horizon + Reverb + scheduler under Supervisor, with `QUEUE_CONNECTION=redis` and `BROADCAST_CONNECTION=reverb`.
 
-### Approach C — "Vercel with a worker sidecar"
+### 5.3 Local staging — the immediate environment
 
-Approach A, plus a tiny always-on worker (Fly.io / Railway, ~USD 5–10/mo) running `queue:work` and the scheduler, so jobs are not cron-latent.
+Because staging is localhost, the **toolchain is the critical path**, and it is currently absent:
 
-| Pros | Cons |
-|---|---|
-| Best of both: Vercel-hosted app + real queue | Two platforms again (but the sidecar is trivial) |
-| Order emails go out in seconds | Slightly more to operate |
+| Need | Status | Note |
+|---|---|---|
+| **PHP 8.3+** | 🔴 **Not installed** | Required extensions: bcmath, curl, dom, fileinfo, libxml, openssl, **pdo_mysql**, simplexml, gd/imagick, exif, intl, zip |
+| **Composer 2** | 🔴 **Not installed** | — |
+| **MySQL 8** | 🔴 Not installed | Or SQLite for a quick first-run try-out (InnoShop supports it) |
+| Node 26 / npm 11 | ✅ Present | — |
 
-### Decision
+Once installed, `composer install && npm install && npm run build && php artisan migrate && php artisan serve` gives a full local storefront. `php artisan serve` is fine for the dev loop; **nginx + php-fpm locally** is worth adding in Phase 4 so staging matches production's request handling (permissions, `public/` serving, upload limits, TLS-less HTTPS).
 
-**Adopt Approach A now; keep Approach C as a one-line upgrade path.** Rationale: the team is one or two people, and Vercel Pro + managed services removes all server administration — the single largest source of operational risk for a small team. Queue latency is acceptable because the only queued work is order-confirmation mail and image processing, and the **authoritative order state is written synchronously during checkout** (never dependent on a worker completing). If mail latency becomes visible to customers, adding a USD 5–10 sidecar converts Approach A into C with no code change.
+### 5.4 Deployment mechanism
 
-**Database:** **managed MySQL** (Approach A assumes this). Postgres is cheaper on Vercel, but InnoShop's schema is MySQL-specific — a port is a multi-week project that dwarfs the entire rest of the roadmap. Recommend MySQL now; revisit only if MySQL hosting becomes the dominant cost.
+Plain git + a release script on the server. No CI provider, no container registry, no platform deploy hooks — a one-file script the owner can run and read:
+
+```
+deploy/
+├── deploy.sh              # pull → composer install → npm ci → npm run build → migrate → restart workers
+├── nginx/wondersoul.conf  # production vhost (derived from public/nginx.conf)
+└── supervisor/
+    ├── horizon.ini
+    ├── reverb.ini
+    └── scheduler.ini
+```
+
+**Rules:** `git pull` on the server is the only deploy action; migrations run in the script with `--force`; Supervisor processes restart at the end; the previous release is a git tag, so rollback is `git checkout <tag> && php artisan migrate:rollback --step=1`.
+
+### 5.5 Database
+
+**MySQL 8 on the production server, local instance for staging.** InnoShop's schema is MySQL-specific (`DB_PREFIX=inno_`, MySQL DDL and collations), so Postgres was never a low-cost swap — on a self-hosted VPS the MySQL-vs-Postgres cost difference disappears entirely. One engine, one set of migrations, one backup procedure.
+
+### 5.6 What we take on instead of the platform
+
+Dropping Vercel means these become **our** responsibilities, and they belong on the Phase 4 / Phase 6 checklists:
+
+1. **Backups** — daily `mysqldump` + `storage/` tar, retained offsite, with a **rehearsed restore**.
+2. **TLS** — Let's Encrypt with auto-renewal; a failed renewal is a silent outage.
+3. **Monitoring** — uptime check, disk-space alert, MySQL-slow-query watch.
+4. **Security patching** — `unattended-upgrades` for OS, and a deliberate composer-update cadence.
+5. **A second server** — a single VPS is a single point of failure; a snapshot-based standby (Hetzner Snapshots, DigitalOcean Snapshots) is the cheap mitigation.
 
 ---
 
@@ -154,14 +205,15 @@ Each phase has an explicit exit criterion. Estimates assume **one full-time deve
 
 | Task | Detail |
 |---|---|
-| Toolchain | Install **PHP 8.3+** (required extensions: bcmath, curl, dom, fileinfo, libxml, openssl, pdo, simplexml) + Composer 2. ⚠️ Neither is currently on PATH. |
+| Toolchain | Install **PHP 8.3+** (required extensions: bcmath, curl, dom, fileinfo, libxml, openssl, **pdo_mysql**, simplexml, gd, exif, intl, zip) + **Composer 2** + **MySQL 8** + **Redis**. ⚠️ None of the three are currently on PATH on this machine — this is the critical path for everything else |
+| Local staging | `composer install` → `npm install && npm run build` → `php artisan key:generate` → `php artisan migrate` → `php artisan serve` (dev loop), with Nginx + PHP-FPM added in Phase 4 for fidelity |
 | Baseline repo | Initialise `laravel_innoshop` as a git repo; tag `upstream/v1.0.1`; commit the InnoShop baseline unmodified |
 | Brand assets | Logo, wordmark, colour palette, type stack, favicon, OG image, product photography |
 | Copy | Indonesian + English: home, collection, about, size chart, shipping, returns, contact, privacy, terms |
 | Legal | Business entity, NPWP/registration, consumer-protection terms — **required for Midtrans production activation** |
 | Config | `APP_NAME=WONDERSOUL JAKARTA`, `APP_URL`, `APP_LOCALE=id`, `APP_FALLBACK_LOCALE=en`, IDR + IDR/USD currency, `system_setting('theme') = 'wondersoul'` |
 
-**Exit:** local `php artisan serve` renders the InnoShop front end in Indonesian with Wondersoul branding; `git log` shows the baseline commit.
+**Exit:** `php artisan serve` renders the InnoShop front end in Indonesian with Wondersoul branding; `php artisan migrate` succeeds against local MySQL 8; `git log` shows the baseline commit.
 
 ---
 
@@ -210,22 +262,38 @@ Each phase has an explicit exit criterion. Estimates assume **one full-time deve
 
 ---
 
-### Phase 4 — Deployment *(~1 week)*
+### Phase 4 — Staging → production server *(~1 week)*
+
+**Split into two halves: first make localhost staging accurate, then provision and cut over the production server.**
+
+#### 4a. Local staging fidelity *(~2 days)*
 
 | Task | Detail |
 |---|---|
-| **Dockerfile** | Multi-stage: `composer:2` deps → `php:8.3-alpine` runtime with all required extensions + `pdo_mysql`, `gd`/`imagick`, `exif`, `intl`, `zip`; Caddy + FrankenPHP per Vercel's official guide |
-| **Caddyfile** | `root * /app/public`, `php_server`, `PORT` from env, zstd/gzip, security headers |
-| **`vercel.json`** | Container preset; `functions` → the container; `crons` → queue drain + scheduler + reconciliation; `regions` → `sin1` (Singapore — closest to Jakarta) |
-| **Install bypass** | Browser wizard cannot run on Vercel (it writes `.env` and `storage/installed`). Ship a **CLI install command** (`php artisan wondersoul:install`) that runs migrations + seeds against the managed DB, and create `storage/installed` **in the image** |
-| **`.env` gate** | `public/index.php` requires a real `.env` file containing `APP_KEY=`. Ship a placeholder `.env` in the image and let Vercel env vars override it — or patch the gate to read `getenv()` |
-| **Media** | Define the `media` disk → S3/R2; verify where it is currently configured; add `AWS_*` / custom endpoint env |
-| **Logging** | `LOG_CHANNEL=stderr` (FrankenPHP) so logs reach Vercel's log drain |
-| **Queue** | `QUEUE_CONNECTION=database`; `vercel.json` cron → `/api/internal/queue-work` (signed) |
-| **Migrations** | Run as a **release step**, not at boot — never `migrate` from multiple concurrent cold starts |
-| Domain + DNS | `wondersoul.jkt` (or `.co.id`) → Vercel; A record / nameservers |
+| Local Nginx + PHP-FPM | Mirror production request handling (permissions, `public/` serving, upload limits, `client_max_body_size 100M`). `php artisan serve` stays the fast dev loop; nginx is the fidelity check. |
+| Local Supervisor | Horizon + Reverb + scheduler running locally, using the same `deploy/supervisor/*.ini` files as production — so a config bug surfaces on localhost, not in production |
+| Local MySQL 8 | Same engine and version as production. **Never develop against SQLite** — DDL and collation differences hide real bugs |
+| Media on local disk | `FILESYSTEM_DISK=public`, `storage/app/public` served by Nginx; confirm the `media` disk configuration resolves (§8 risk 9) |
+| `storage/` permissions | `chown -R www-data:www-data storage bootstrap/cache` — the single most common Laravel-on-Nginx failure |
+| `.env` for staging | `APP_ENV=staging`, `APP_DEBUG=false`, `APP_URL=http://localhost:8080`, real `APP_KEY`, `LOG_CHANNEL=daily` |
 
-**Exit:** `vercel deploy` → production URL serves the storefront; a full order completes in production; the DB is migrated; media uploads land in S3; the app does not redirect to `/install`.
+#### 4b. Production server *(~3 days)*
+
+| Task | Detail |
+|---|---|
+| Provision | Ubuntu 24.04 LTS VPS (Hetzner CX22 / DigitalOcean 2 vCPU). **≈ USD 12–24/month.** A snapshot-capable provider is preferred, for cheap standby |
+| Base stack | Nginx, PHP-FPM 8.3 (all required extensions), MySQL 8, Redis (for `QUEUE_CONNECTION=redis` + Reverb), Composer 2, Node 22 LTS (build-time only) |
+| Nginx vhost | **Reuse InnoShop's own `public/nginx.conf`** — it already contains the rewrite rules, static caching, security headers, upload limit and the `/vendor` + `/storage` PHP-execution denies. Adjust the server name, root and `fastcgi_pass` socket path only |
+| TLS | Let's Encrypt via `certbot --nginx`, auto-renewal verified (`certbot renew --dry-run`) |
+| Supervisor | `deploy/supervisor/{horizon,reverb,scheduler}.ini` — mirroring the layout in InnoShop's Supervisor doc. `BROADCAST_CONNECTION=reverb`, `QUEUE_CONNECTION=redis` |
+| Release script | `deploy/deploy.sh`: `git pull` → `composer install --no-dev --optimize-autoloader` → `npm ci && npm run build` → `THEME=wondersoul npm run build` → `php artisan migrate --force` → `php artisan config:clear && cache:clear` → `php artisan storage:link` → `supervisorctl restart all` |
+| Installer | The **browser wizard works on a real server** (writable FS) — use it for the first boot. Keep `php artisan wondersoul:install` as a documented CLI path for re-provisioning |
+| Media | Local disk via `storage/app/public` + `storage:link`; Nginx serves `/storage` directly. **No S3 needed** |
+| Backups | Daily `mysqldump` + `storage/` tar → offsite (S3 bucket or restic). **A restore must be rehearsed**, not assumed |
+| Monitoring | Uptime check (external, e.g. UptimeRobot) + disk-space and MySQL-connection alerts. A dead server that nobody notices is worse than a slow one |
+| DNS | `wondersoul.jkt` / `wondersoul.co.id` → A record to the VPS; `www` → apex |
+
+**Exit:** a full order completes on the production server (Midtrans sandbox → webhook → order paid → visible in the panel); media uploads land in `storage/app/public` and are served by Nginx; `supervisorctl status` shows Horizon, Reverb and the scheduler running; a TLS renewal dry-run succeeds; and a database restore has been performed once, successfully, from a backup.
 
 ---
 
@@ -248,12 +316,12 @@ Each phase has an explicit exit criterion. Estimates assume **one full-time deve
 | Task | Detail |
 |---|---|
 | SEO | Product/category schema, `sitemap.xml` (spatie/laravel-sitemap already in core), OG/Twitter cards, `hreflang` for `id`/`en` |
-| Performance | Image CDN + WebP/AVIF, lazy loading, Core Web Vitals budget |
+| Performance | Image optimisation (WebP/AVIF) + lazy loading, Core Web Vitals budget, Nginx gzip/brotli + long-cache static assets |
 | Legal | ToS, privacy, return/exchange policy, NPWP/business data in the footer |
 | Accessibility | Contrast, focus states, keyboard nav on the custom theme |
-| Observability | Uptime check, Pixel-health widget, webhook-failure alert (email), daily order-count sanity check |
-| Backup | Managed MySQL automated backups + a verified restore run |
-| Rollback | Documented rollback procedure (previous Vercel deployment + previous DB snapshot) |
+| Observability | Uptime check (external), Pixel-health widget, webhook-failure alert (email), daily order-count sanity check, disk-space alert |
+| Backup | Daily `mysqldump` + `storage/` tar to offsite, with a **rehearsed restore** |
+| Rollback | Documented rollback procedure (previous git tag + `migrate:rollback` + server snapshot) |
 
 **Exit:** a written launch checklist passes; a colleague can take an order end-to-end using only the panel + the phone.
 
@@ -292,9 +360,8 @@ Each phase has an explicit exit criterion. Estimates assume **one full-time deve
 | `plugins/MetaPixel/` | Plugin | `config.json`, `fields.php`, `Boot.php`, `Services/{MetaPixelService,CapiClient}.php`, `Controllers/PixelHealthController.php`, `Lang/{en,id}/common.php`, `Tests/Feature/` |
 | `plugins/Cod/` *(conditional)* | Plugin | `config.json`, `fields.php`, `Boot.php`, `Views/payment.blade.php`, `Lang/{en,id}/common.php` |
 | `plugins/WondersoulTools/` | Plugin | MCP/AI tools: `Tools/{DropsTool,StockTool,BestSellersTool}.php` registered via `ai.tools` |
-| `Dockerfile` / `Caddyfile` | Infra | FrankenPHP + Caddy, multi-stage |
-| `vercel.json` | Infra | Container preset, crons, region |
-| `app/Console/Commands/WondersoulInstall.php` | CLI | Migration + seed + `storage/installed` marker (replaces the browser wizard on Vercel) |
+| `deploy/` | Infra | `deploy.sh` (git-pull release script), `nginx/wondersoul.conf` (derived from InnoShop's own `public/nginx.conf`), `supervisor/{horizon,reverb,scheduler}.ini` |
+| `app/Console/Commands/WondersoulInstall.php` | CLI | Optional: a scripted install for re-provisioning the server without the browser wizard |
 
 ### 8.2 Upstream we consume unchanged
 
@@ -309,9 +376,11 @@ InnoShop core (`innopacks/*`), the `PageBuilder` plugin (for lookbook/editorial 
 | PHP 8.3 + extensions | 🔴 **Missing** | Install locally (XAMPP/Laragon/standalone) |
 | Composer 2 | 🔴 **Missing** | Install |
 | Node 26 / npm 11 | ✅ Present | — |
-| MySQL (managed) | 🔴 Needed | Provision for staging + production |
-| S3-compatible bucket | 🔴 Needed | For the `media` disk |
-| Vercel account (Pro) | 🔴 Needed | Container runtime requires it |
+| MySQL 8 | 🔴 Needed | Local instance for staging + on the production VPS |
+| Redis | 🔴 Needed | `QUEUE_CONNECTION=redis` + `BROADCAST_CONNECTION=reverb`, per InnoShop's Supervisor doc |
+| Production VPS | 🔴 Needed | Ubuntu 24.04, Nginx + PHP-FPM 8.3 + MySQL 8 + Redis + Supervisor. ≈ USD 12–24/month |
+| S3-compatible bucket | 🟢 **Dropped** | Media lives on local disk (`storage/app/public`); only a small offsite **backup** bucket is needed |
+| Vercel account | 🟢 **Dropped** | Not required |
 | Midtrans account | 🔴 Needed | Sandbox first; production activation needs business docs + website URL live |
 | Meta Business Manager + Pixel | 🔴 Needed | Create Pixel + CAPI token; site must be live and matching |
 | Domain | 🔴 Needed | For Meta domain verification and Midtrans production |
@@ -323,17 +392,24 @@ InnoShop core (`innopacks/*`), the `PageBuilder` plugin (for lookbook/editorial 
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Vercel container cold starts hurt conversion | Medium | Medium | Warm the function; keep the storefront cacheable at the edge; Vercel Fluid/Compute if needed |
-| Managed MySQL cost exceeds budget | Medium | Medium | Compare PlanetScale vs Aiven vs DigitalOcean managed MySQL; Phase 0 decision |
+| Vercel container cold starts hurt conversion | — | — | ❌ **Dropped with the Vercel target** |
+| Managed MySQL cost exceeds budget | — | — | ❌ **Dropped** — MySQL runs on the same VPS |
 | Midtrans webhook missed → customer paid, store says unpaid | **High** if unmitigated | **High** | Idempotent handler + **status reconciliation sweep** on a schedule + manual "check status" button in the order panel |
 | CAPI/browser event mismatch → double-counted purchases | Medium | High | Single shared `event_id` helper used by *both* paths; covered by a feature test |
 | Checkout blocked by a slow Meta API call | Medium | High | CAPI dispatch is queued, never synchronous inside the checkout request |
-| Checkout broken by the container build | Medium | High | Stage + preview deployments; the theme/plugin set is small and testable |
+| Checkout broken by the container build | — | — | ❌ **Dropped** — `deploy/deploy.sh` runs migrations and restarts workers in one atomic step; the previous git tag is the rollback target |
 | Payment marked paid twice (webhook + reconciliation) | Medium | Medium | Idempotency key on `order_id`; state machine guards |
 | Owner cannot operate the panel | Medium | High | Phase 1 includes a written admin runbook; keep the panel surface small |
 | Catalog content never arrives | **High** | **High** | Phase 0 gate: owner supplies the 88-post export before Phase 1 starts |
 | Meta Pixel/CAPI event schema rejected (API version drift) | Medium | Medium | Re-verify against live Meta docs at implementation time; pin the Graph API version |
-| Site goes down and nobody notices | Low | High | Uptime check + webhook-failure alert + daily order sanity check |
+| **Server goes down and nobody notices** | Medium | **High** | External uptime check + disk-space alert + webhook-failure email. *This risk was transferred from the platform to us.* |
+| **No backups, or backups that were never restored** | Medium | **High** | Daily `mysqldump` + `storage/` tar to offsite; **rehearse a restore before launch**, and again quarterly |
+| **TLS certificate expires silently** | Low | **High** | `certbot --nginx` auto-renew + a `certbot renew --dry-run` check on the release checklist + expiry monitoring |
+| **Single VPS = single point of failure** | Medium | High | Provider snapshots (cheap standby) + a documented re-provision path (`deploy/deploy.sh` must work from a clean server) |
+| **Server security rot (no OS patching, SSH exposed)** | Medium | High | `unattended-upgrades`, SSH key-only auth, fail2ban, UFW, quarterly composer-update cadence |
+| Disk fills with logs/uploads → MySQL or app dies | Low | High | Log rotation, `logrotate` for `storage/logs`, disk-usage alert at 80% |
+| Midtrans webhook endpoint not reachable over HTTPS | Low | **High** | Let's Encrypt cert valid before going live; verify the Midtrans dashboard shows a successful notification delivery |
+| Nginx/PHP permission mistake → 500s in production | Low | High | Local nginx staging mirrors production; `storage/` + `bootstrap/cache` ownership set in the release script |
 
 ---
 
@@ -349,15 +425,17 @@ These change what gets built. **Q1 and Q2 are blocking.**
 | **Q4** | **Made-to-order, pre-order, or stocked?** | Determines whether we need a waitlist/stock-notify flow and whether stock is real-time | Stocked, with stock shown as remaining |
 | **Q5** | **Is the WonderSoul Weekender music collective part of the business?** | Decides whether the site also hosts releases, event pages or tickets — and whether the launch story is "a label" or "a community" | Assume yes: model a "Release" as a first-class concept, but ship no ticketing |
 | **Q6** | **Bilingual ID/EN from day one, or ID only for launch?** | Affects content volume, SEO and the `hreflang` setup | Bilingual, EN for the homepage/collection/product pages only |
-| **Q7** | **Vercel Pro + managed MySQL + S3 (~USD 60–150/mo) — acceptable?** | If not, Approach B (VPS) is cheaper and simpler | Assume yes; flag costs before Phase 4 |
-| **Q8** | **Domain?** (`wondersoul.jkt` / `wondersoul.co.id` / other) | Required for Meta verification and Midtrans production activation | Reserve `wondersoul.co.id` and point it at Vercel |
+| **Q7** | ~~Vercel Pro + managed MySQL + S3 (~USD 60–150/mo)~~ | ✅ **Resolved 2026-11-21** — dropped. Replaced by a single VPS (≈ USD 12–24/month) | Resolved |
+| **Q7b** | **Which VPS provider?** (Hetzner / DigitalOcean / Linode / Contabo) | Determines price, data-centre proximity to Jakarta (Singapore region preferred), snapshot support, and who holds the account | Hetzner (cheapest, snapshots, Singapore region) unless the owner already has an account elsewhere |
+| **Q8** | **Domain?** (`wondersoul.jkt` / `wondersoul.co.id` / other) | Required for Meta verification and Midtrans production activation | Reserve `wondersoul.co.id`, A record to the VPS |
 | **Q9** | **Return/exchange policy, and who pays return shipping?** | Needed for policy pages, and for the COD flow's risk model | 14-day returns, buyer pays return shipping (common for local labels) |
+| **Q10** | **Who holds the VPS + domain + Midtrans + Meta accounts?** | If accounts sit with one person, a departure takes the business with it. Affects the runbook and the handover documents | Assume the owner holds them; the runbook documents every console URL and credential location |
 
 ---
 
 ## 12. Definition of Done (v1)
 
-- [ ] `vercel deploy` → production URL live on the final domain, HTTPS, no `/install` redirect
+- [ ] Production server serves the storefront on the final domain over HTTPS, with no `/install` redirect
 - [ ] Indonesian is the default locale; English available; IDR and one foreign currency selectable
 - [ ] Catalogue: 4 collections, garments with colourways, size charts, fit notes, releases
 - [ ] A full order completes in production: add to cart → checkout → Midtrans sandbox → webhook → order paid → owner sees it in the panel
@@ -365,15 +443,17 @@ These change what gets built. **Q1 and Q2 are blocking.**
 - [ ] Events Manager shows deduplicated Purchase events with correct value and currency
 - [ ] MCP endpoint responds; `claude mcp add` succeeds; ≥ 3 brand tools listed on `/mcp`
 - [ ] `themes/wondersoul` builds from a clean checkout with one command
+- [ ] `deploy/deploy.sh` takes the server from the previous tag to the new one in a single run
+- [ ] Supervisor reports Horizon, Reverb and the scheduler running; order confirmation email arrives in seconds, not minutes
 - [ ] Owner completes a full fulfilment cycle unaided, using the runbook
-- [ ] Backup + restore rehearsed; rollback documented; alerts firing
+- [ ] Backup + **restore rehearsed**; rollback documented; uptime, disk and webhook alerts firing
 
 ---
 
 ## 13. What I need from you next
 
 1. **Answer Q1 and Q2** — they unblock Phase 1 and Phase 2 respectively.
-2. **Confirm or reject the architecture in §5** (Approach A, managed MySQL).
-3. **Give the go-ahead on Phase 0** — it is mostly environment setup and content collection, and nothing downstream can start without it.
+2. **Confirm the revised architecture in §5** — local staging → a single production VPS running InnoShop's documented topology (Nginx + PHP-FPM + MySQL + Redis + Supervisor). Vercel is out; cost drops from ≈ USD 60–150 to ≈ USD 12–24/month.
+3. **Give the go-ahead on Phase 0** — it is mostly environment setup (PHP 8.3 + Composer + MySQL are **not installed** on this machine) and content collection. Nothing downstream can start without it.
 
 Everything in §11 marked "default if unanswered" has a defensible default, so unanswered questions will not stall the build — but Q1 and Q2 will produce a *wrong* catalogue if guessed.

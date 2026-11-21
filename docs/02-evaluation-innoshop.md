@@ -10,12 +10,12 @@
 
 | # | Goal | Verdict | Effort to close |
 |---|---|---|---|
-| 1 | Ecommerce on InnoShop, buildable to **Vercel** | ⚠️ **Blocked by architecture, not by code.** Vercel has no official PHP runtime, and InnoShop's documented production topology (Horizon + Reverb + Supervisor) requires persistent processes Vercel cannot host. | **High** — infra reshape, not a code fix |
+| 1 | Ecommerce on InnoShop, buildable to **Vercel** | ⚠️ **Blocked by architecture, not by code.** Vercel has no official PHP runtime, and InnoShop's documented production topology (Horizon + Reverb + Supervisor) requires persistent processes Vercel cannot host. **→ Resolved 2026-11-21: Vercel dropped; production = Nginx + PHP-FPM + MySQL + Redis + Supervisor.** | **Closed** |
 | 2 | **Meta Pixel (CAPI)** tracking | ❌ **Entirely absent.** Zero pixel/analytics/GTM code anywhere in the codebase. | **Low** — clean plugin, one known hook point |
 | 3 | **Midtrans** payment gateway | ❌ **Absent.** But the payment-plugin contract is clean and well-documented; Stripe is a full reference implementation. | **Medium** — one plugin, ~1 week |
 | 4 | **MCP** integrated, plugin mechanisms, theme templates | ✅ **Substantially built in.** MCP server, 45+ tools, AI core, hook system, plugin system, theme system all ship with core. | **Low** — mostly configuration + custom tools |
 
-**The headline:** InnoShop is an excellent fit for goals 2, 3 and 4, and a *poor* fit for goal 1 as stated. Goal 1 needs an explicit decision about what Vercel is allowed to be.
+**The headline:** InnoShop is an excellent fit for goals 2, 3 and 4, and a *poor* fit for goal 1 as originally stated. Goal 1 required an explicit decision about what Vercel is allowed to be — **taken on 2026-11-21: Vercel dropped, production moves to a conventional server.** See §2 and `03-development-goals.md §5`.
 
 ---
 
@@ -73,6 +73,10 @@ Theme mechanics verified:
 ---
 
 ## 2. Goal 1 — Build to Vercel
+
+> ✅ **RESOLVED 2026-11-21 — Vercel dropped as the deployment target.** The owner decided to stage on localhost and deploy to a conventional production server instead. **The entire section below is now historical context**, but the findings are retained because they explain *why* the decision was correct, and because several of them (the installer writing to disk, the `media` disk, the `.env` gate) still shape the production-server plan. See [`03-development-goals.md §5`](03-development-goals.md) for the revised architecture.
+>
+> **What changed in practice:** the Container runtime, the `vercel.json` crons, the CLI install bypass, the S3 media requirement and the `LOG_CHANNEL=stderr` workaround are all **dropped**. In their place: Nginx + PHP-FPM + MySQL + Redis + Supervisor, which is the topology InnoShop's own documentation prescribes — so Horizon, Reverb and the scheduler all work as shipped, and media lives on local disk. Monthly cost falls from ≈ USD 60–150 to ≈ USD 12–24.
 
 ### 2.1 The runtime problem (external, decisive)
 
@@ -140,7 +144,7 @@ And the installer itself **writes to disk**:
 ### 2.5 What else the Vercel build must handle
 
 - **Asset build**: `npm run build` (Vite 8) must run in the Vercel build step; `public/build/{front,panel,install}` already exist locally. Theme assets additionally need `THEME=wondersoul npm run build` → `public/static/themes/wondersoul/`.
-- **`public/` also ships `nginx.conf`** (a standard InnoShop nginx vhost) — irrelevant under FrankenPHP/Caddy, but it must not be mistaken for a Vercel config.
+- **`public/` also ships `nginx.conf`** (a standard InnoShop nginx vhost) — **now directly reusable** for the production server: it already carries the rewrite rules, static caching, security headers, the 100M upload limit, and the denies on `/vendor` and `/storage` PHP execution. Only the server name, root and `fastcgi_pass` socket path need adjusting.
 - **`.env` on Vercel** is injected as env vars, not a file. `public/index.php` requires `file_exists('.env')` **and** `str_contains(file_get_contents('.env'), 'APP_KEY=')`. `$_ENV`/`getenv()` alone will not satisfy this gate → **the image must contain a minimal `.env`**, or `index.php` must be patched.
 - **`config/filesystems.php`** defines `local`, `public`, `s3` — but **no `media` disk**, even though `MediaFile` and `VideoPosterService` call `Storage::disk('media')`. That disk must be defined. ❓ Where it is currently defined was not located in `config/*.php` — verify before relying on it.
 
@@ -148,7 +152,9 @@ And the installer itself **writes to disk**:
 
 **Not a code problem — an architecture decision that must be made explicitly.** Three coherent options are costed in `03-development-goals.md` §5.
 
-**Risk — database engine:** InnoShop's schema is MySQL-specific (`DB_PREFIX=inno_`, raw MySQL DDL, `utf8mb4_*` collations, MySQL-flavoured migrations). Switching to Postgres for a cheaper Vercel-native DB is **not** a configuration change and is likely a multi-week migration. **Recommend: managed MySQL.** This is the single biggest hidden cost in goal 1.
+> **Outcome (2026-11-21):** the decision was made — **Vercel dropped**, production moves to a conventional server. All the findings above then become *assets*: InnoShop's documented Supervisor topology works unmodified, the browser installer works (writable filesystem), media can live on local disk, and no code has to be patched for serverless constraints. The evaluation confirmed that Vercel was the wrong target for this codebase — the finding was right even though the conclusion changed.
+
+**Risk — database engine:** InnoShop's schema is MySQL-specific (`DB_PREFIX=inno_`, raw MySQL DDL, `utf8mb4_*` collations, MySQL-flavoured migrations). Switching to Postgres is **not** a configuration change and is likely a multi-week migration. **Recommend: MySQL** — on a self-hosted VPS the MySQL-vs-Postgres cost difference disappears entirely, so there is no reason to pay the migration.
 
 ---
 
@@ -420,11 +426,11 @@ Key properties (per docs): the hook fires **lazily** on first registry read, so 
 | **COD payment** | ❌ | build `plugins/Cod` | 1–2 days |
 | **Meta Pixel base + events** | ❌ | build `plugins/MetaPixel` | 2–3 days |
 | **CAPI server events + dedup** | ❌ | same plugin + hash helper | 1–2 days |
-| **Vercel container runtime** | ❌ | Dockerfile + FrankenPHP + Caddy | 2–3 days |
-| **Vercel-safe install/seed** | ❌ | CLI seeder, patch `index.php` gate | 1–2 days |
-| **S3/R2 media disk** | ⚠️ | define `media` disk → S3 | 0.5 day |
-| **Worker replacement** | ⚠️ | DB queue + Vercel Cron; drop Horizon/Reverb | 1–2 days |
-| **Managed MySQL** | ⚠️ | provision + schema | 1 day + ongoing cost |
+| **Vercel container runtime** | ❌ | ❌ **Dropped** with the Vercel target | — |
+| **Vercel-safe install/seed** | ❌ | ❌ **Dropped** — the browser installer works on a real server | — |
+| **S3/R2 media disk** | ⚠️ | ⚠️ **Simplified** — media on local disk; only an offsite *backup* bucket needed | 0.5 day |
+| **Worker replacement** | ⚠️ | ✅ **Not needed** — Horizon + Reverb + scheduler run under Supervisor, exactly as InnoShop documents | 1 day |
+| **Managed MySQL** | ⚠️ | ✅ **Not needed** — MySQL 8 on the same VPS | 1 day + ongoing cost |
 | **`themes/wondersoul`** | ❌ | author from scratch | **2–4 weeks** |
 | **Brand content & catalog** | ❌ | owner data (88 IG posts) | blocked on owner |
 
@@ -432,8 +438,8 @@ Key properties (per docs): the hook fires **lazily** on first registry read, so 
 
 ## 7. Risks & findings requiring the owner's decision
 
-1. **🔴 Vercel + InnoShop is an architectural mismatch, not a deployment config.** No official PHP runtime; InnoShop wants Horizon + Reverb + Supervisor; the installer writes to disk. A Vercel-native build means: Container runtime, DB queue + Cron, no websockets, CLI-based seeding, S3 media, managed MySQL. It is achievable — but it is a *rewrite of the deployment story*, and it costs real money (managed MySQL + S3) versus a VPS.
-2. **🔴 MySQL vs Postgres.** InnoShop's schema is MySQL-specific. On Vercel, Postgres is far cheaper and better supported. Keeping MySQL means paying for PlanetScale/Aiven. This is the biggest hidden cost line.
+1. **✅ RESOLVED — Vercel + InnoShop was an architectural mismatch, and the deployment target is now a conventional production server.** The analysis stands: no official PHP runtime; InnoShop wants Horizon + Reverb + Supervisor; the installer writes to disk. On a VPS none of those are problems — the documented topology works unmodified, the installer works, media stays on local disk, and no serverless workaround is needed. The platform-responsibility risks (uptime, backups, TLS, patching) are now **ours**, and are on the risk register in `03-development-goals.md §10`.
+2. **🟢 RESOLVED — MySQL vs Postgres.** InnoShop's schema is MySQL-specific, but on a self-hosted VPS the cost difference vanishes, so **MySQL 8 on the same server** — one engine, one set of migrations, one backup procedure, and no porting work.
 3. **🟠 The `themes/` directory is empty upstream.** No theme to fork; the `wondersoul` theme is from-scratch work and is the largest single line item in the plan.
 4. **🟠 Repo `CLAUDE.md` is stale** (says Laravel Mix / PHP 8.2 / `webpack.mix.js`). It will actively mislead an AI agent or a new developer. It should be rewritten or deleted early.
 5. **🟠 `plugins/Stripe/composer.json` still exists**, contradicting the repo's own rule that plugins must not carry `composer.json`. Minor, but it is the reference implementation a developer will copy.

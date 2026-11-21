@@ -31,12 +31,12 @@ The Laravel application lives in `laravel_innoshop/` (working copy of InnoShop C
 
 | # | Goal | Status |
 |---|---|---|
-| 1 | Ecommerce on the InnoShop baseline, buildable to **Vercel** | ⚠️ Needs an architecture decision — see below |
+| 1 | Ecommerce on the InnoShop baseline, **staged on localhost → deployed to a production server** | ✅ Target decided — Nginx + PHP-FPM + MySQL + Redis + Supervisor |
 | 2 | **Meta Pixel (CAPI)** tracking, browser↔server dedup | ❌ Not present in InnoShop — build as a plugin |
 | 3 | **Midtrans** payment gateway (+ MCP for intelligent automation) | ❌ Not present in InnoShop — build as a plugin |
 | 4 | Plugin mechanisms and theme template development | ✅ Core already ships these |
 
-**Goals 2, 3 and 4 fit InnoShop well.** Goal 1 is the hard one: Vercel has **no official PHP runtime**, and InnoShop's documented production topology (Horizon + Reverb + Supervisor) assumes persistent processes Vercel cannot host. The recommended path — Container runtime (FrankenPHP) + managed MySQL + S3 media + database queue drained by Vercel Cron — is laid out in [`docs/03-development-goals.md §5`](docs/03-development-goals.md).
+**Goal 1 was re-scoped on 2026-11-21.** The original brief was "build to Vercel"; the evaluation showed Vercel is a poor fit for InnoShop (no official PHP runtime, and the documented Horizon/Reverb/Supervisor topology cannot be hosted there). The target is now a conventional production server, which lets InnoShop run its own documented topology unmodified, keeps media on local disk, and drops the monthly cost from ≈ USD 60–150 to ≈ USD 12–24. See [`docs/03-development-goals.md §5`](docs/03-development-goals.md).
 
 ---
 
@@ -69,7 +69,7 @@ See [`docs/03-development-goals.md §11`](docs/03-development-goals.md) for all 
 | Payments | Midtrans Snap (ID) · Stripe / PayPal (global) · COD (optional) |
 | Tracking | Meta Pixel (browser) + Conversions API (server, deduped) |
 | Automation | InnoShop MCP server (`/mcp`) + `laravel/ai` tools |
-| Deployment | Vercel Container runtime (FrankenPHP + Caddy) · managed MySQL · S3 media |
+| Deployment | Local staging (PHP 8.3 + MySQL 8) → **production VPS**: Ubuntu 24.04 · Nginx · PHP-FPM 8.3 · MySQL 8 · Redis · Supervisor (Horizon + Reverb + scheduler) · Let's Encrypt TLS |
 
 ---
 
